@@ -1,0 +1,100 @@
+name: Release
+
+on:
+    workflow_dispatch:
+        inputs:
+            tag:
+                description: "Release tag (leave empty to use v<package.json version>)"
+                required: false
+                default: ""
+            prerelease:
+                description: "Mark as pre-release"
+                type: boolean
+                default: false
+            run_tests:
+                description: "Run unit tests before building"
+                type: boolean
+                default: true
+
+permissions:
+    contents: write
+
+concurrency:
+    group: release
+    cancel-in-progress: false
+
+jobs:
+    release:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: Setup node
+              uses: actions/setup-node@v4
+              with:
+                  node-version: 24
+                  cache: npm
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Run unit tests
+              if: ${{ inputs.run_tests }}
+              run: npm run test
+
+            - name: Build static site
+              run: npm run build
+              env:
+                  NODE_ENV: production
+
+            - name: Resolve release tag
+              id: tag
+              env:
+                  INPUT_TAG: ${{ inputs.tag }}
+              run: |
+                  VERSION=$(node -p "require('./package.json').version")
+                  TAG="${INPUT_TAG:-v$VERSION}"
+                  if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+                      if [ -n "$INPUT_TAG" ]; then
+                          echo "::error::Tag $TAG already exists"
+                          exit 1
+                      fi
+                      TAG="$TAG-build.${{ github.run_number }}"
+                  fi
+                  echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+                  echo "Release tag: $TAG"
+
+            - name: Package static build
+              id: package
+              run: |
+                  ZIP="chili3d-${{ steps.tag.outputs.tag }}.zip"
+                  (cd dist && zip -r -q "../$ZIP" .)
+                  sha256sum "$ZIP" > "$ZIP.sha256"
+                  echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+                  ls -lh "$ZIP"
+
+            - name: Create GitHub release
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  TAG: ${{ steps.tag.outputs.tag }}
+                  ZIP: ${{ steps.package.outputs.zip }}
+                  PRERELEASE: ${{ inputs.prerelease }}
+              run: |
+                  FLAGS=()
+                  if [ "$PRERELEASE" = "true" ]; then FLAGS+=(--prerelease); fi
+                  cat > notes.md <<EOF
+                  Static build of Chili3D from \`${{ github.sha }}\`.
+
+                  Download \`$ZIP\`, extract it, and upload the contents to any static host
+                  (all asset paths are relative, so it also works from a sub-directory).
+                  EOF
+                  gh release create "$TAG" "$ZIP" "$ZIP.sha256" \
+                      --target "${{ github.sha }}" \
+                      --title "Chili3D $TAG" \
+                      --notes-file notes.md \
+                      --generate-notes \
+                      "${FLAGS[@]}"
