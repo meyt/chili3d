@@ -1,0 +1,21 @@
+# Apache config for static hosting of the Chili3D build.
+
+# Serve WebAssembly with the right MIME type so browsers can stream-compile it.
+AddType application/wasm .wasm
+AddType image/svg+xml .svg
+AddType font/woff2 .woff2
+
+<IfModule mod_deflate.c>
+    AddOutputFilterByType DEFLATE text/html text/css application/javascript application/json application/wasm image/svg+xml
+</IfModule>
+
+<IfModule mod_headers.c>
+    # Hashed chunks (e.g. 649.js, fa0f4d15c0af676d.wasm) change name on every build.
+    <FilesMatch "^([0-9]+|[0-9a-f]{16})\.(js|css|wasm)$">
+        Header set Cache-Control "public, max-age=31536000, immutable"
+    </FilesMatch>
+    # Entry files keep a stable name, so always revalidate them.
+    <FilesMatch "^(index\.html|main\.(js|css)|index\.css)$">
+        Header set Cache-Control "no-cache"
+    </FilesMatch>
+</IfModule>
